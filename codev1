@@ -1,0 +1,102 @@
+import requests
+import pandas as pd
+from datetime import datetime
+import time
+import matplotlib.pyplot as plt
+
+latitude = 
+longitude =   
+radius =  
+
+url = "https://api.inaturalist.org/v1/observations"
+params = {
+    "lat": latitude,
+    "lng": longitude,
+    "radius": radius,
+    "per_page": 100,
+    "order_by": "observations_count",
+    "order": "desc",
+    "d1": "2023-07-01T00:00:00Z",
+    "d2": "2023-07-31T23:59:59Z",
+    "taxon_id": 47158,  #insect filter
+    "quality_grade": "research",
+    "verifiable": True,  
+    "geo": True  
+}
+
+species_list = []
+page = 1
+
+while True:
+    params['page'] = page
+    response = requests.get(url, params=params)
+    if response.status_code != 200:
+        print(f"Error: {response.status_code}")
+        break
+    data = response.json()
+    observations = data.get('results', [])
+    
+    if not observations:
+        break
+    
+    for obs in observations:
+        taxon = obs['taxon']
+        location = obs.get('location', None)
+        place_guess = obs.get('place_guess', 'Unknown')  
+        
+        if location:
+            obs_latitude, obs_longitude = map(float, location.split(','))
+            distance = ((latitude - obs_latitude)**2 + (longitude - obs_longitude)**2)**0.5 * 111139  # Convert degrees to meters
+            if distance <= radius:
+                if taxon['rank'] in ['species', 'genus', 'subspecies', 'variety']:
+                    observed_on = obs.get('time_observed_at', obs.get('observed_on'))
+                    species_list.append({
+                        "species_name": taxon['name'],
+                        "common_name": taxon.get('preferred_common_name', 'N/A'),
+                        "observation_count": obs['id'], 
+                        "observed_on": observed_on,
+                        "latitude": obs_latitude,
+                        "longitude": obs_longitude,
+                        "place_guess": place_guess 
+                    })
+    #rate lim
+    page += 1
+    time.sleep(1) 
+
+    if page > 10:
+        print("taking too long, execution stopped.")
+        break
+df = pd.DataFrame(species_list)
+print("DataFrame columns:", df.columns)
+print("DataFrame sample:")
+print(df.head())
+df['observation_count'] = df.groupby('species_name')['observation_count'].transform('count')
+df = df.drop_duplicates(subset=['species_name']).sort_values(by='observation_count', ascending=False)
+df['observed_on'] = pd.to_datetime(df['observed_on'], errors='coerce')
+df = df.dropna(subset=['observed_on']).copy()
+
+df.loc[:, 'month'] = df['observed_on'].dt.month
+df.loc[:, 'day'] = df['observed_on'].dt.day
+df.loc[:, 'hour'] = df['observed_on'].dt.hour
+df.loc[:, 'minute'] = df['observed_on'].dt.minute
+best_month = df['month'].mode()[0]
+best_day = df['day'].mode()[0]
+best_hour = df['hour'].mode()[0]
+best_minute = df['minute'].mode()[0]
+
+print(df.head(10))
+print(f"Best Month: {best_month}")
+print(f"Best Day: {best_day}")
+print(f"Best Hour: {best_hour}")
+print(f"Best Minute: {best_minute}")
+
+print("verify locations:")
+print(df[['species_name', 'common_name', 'latitude', 'longitude', 'place_guess']])
+
+plt.figure(figsize=(12, 8))
+plt.barh(df['common_name'].head(10), df['observation_count'].head(10), color='skyblue')
+plt.xlabel('observation_count')
+plt.ylabel('species')
+plt.title('top 10')
+plt.gca().invert_yaxis()
+plt.show()
